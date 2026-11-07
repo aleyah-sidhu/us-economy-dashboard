@@ -1,0 +1,16 @@
+# Python environment and caches
+.venv/
+__pycache__/
+*.pyc
+ 
+# Secrets: never commit API keys
+.env
+.streamlit/secrets.toml
+ 
+# Generated data (rebuilt by the pipeline)
+data/raw/
+data/*.db
+ 
+# Editor and OS files
+.vscode/
+.DS_Store
