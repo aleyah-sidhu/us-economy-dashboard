@@ -1,4 +1,4 @@
--- What states have the highest unemployment now and who's improving
+-- What states have the highest unemployment now and who's improving?
 
 -- Output: one row per state for most recent month in the data:
 -- unemployement_rate : latest unemployment rate (%)

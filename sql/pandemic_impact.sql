@@ -1,4 +1,4 @@
--- Which states were hit the hardest in 2020 and how fast did they recover
+-- Which states were hit the hardest in 2020 and how fast did they recover?
 
 -- Output: one row per state:
 -- baseline_rate : unemployment rate in feb 2020
@@ -71,7 +71,7 @@ SELECT
     s.state_name,
     s.region,
     b.baseline_rate,
-    pd.peak_rate
+    pd.peak_rate,
     ROUND(pd.peak_rate - b.baseline_rate, 1) AS increase,
     pd.peak_date,
     r.recovery_date,
