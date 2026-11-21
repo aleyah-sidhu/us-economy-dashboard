@@ -81,6 +81,7 @@ def build_rows(files):
             state_code,
         ))
         #for each observation in raw data add values to observation_rows
+        #data['observations'] = list of dict, obs = dic
         observation_rows.extend(
             (series_id, obs["date"], parse_value(obs["value"]))
             for obs in data["observations"]
