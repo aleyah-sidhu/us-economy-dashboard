@@ -1,4 +1,4 @@
--- How do the four regions compare over time
+-- How do the four regions compare over time?
 
 -- Output: one row per region per month:
 -- avg_unemployement_rate : average unemployment rate (%) of states in the region
