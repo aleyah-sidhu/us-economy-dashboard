@@ -8,6 +8,7 @@ to run: streamlit run app.py
 
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
 import streamlit as st
 from plotly.subplots import make_subplots
 from src import queries
@@ -27,7 +28,12 @@ RECESSIONS = [
 def load_national():
     return queries.national_trends()
 
+@st.cache_data
+def load_state():
+    return queries.state_latest()
+
 ##Helping functions
+
 #return latest value, its date, and value a year earlier for one column
 def latest_with_year_ago(df, col):
     series = df.dropna(subset=[col])
@@ -73,9 +79,9 @@ def national_highlights(view):
     if not inflation.empty:
         row = inflation.loc[inflation["inflation_rate"].idxmax()]
         parts.append(f"inflation peaked at {row.inflation_rate:.1f}% in {row.obs_date:%b %Y}")
-        if not parts:
-            return ""
-        return "In the selected range, " + " and ".join(parts) + "."
+    if not parts:
+        return ""
+    return "In the selected range, " + " and ".join(parts) + "."
     
 #create two stacked panels: labor market and prices on top, interest rates below
 def build_national_chart(view):
@@ -113,6 +119,48 @@ def build_national_chart(view):
         hovermode="x unified",
         legend=dict(orientation="h", y=-0.1),
         margin=dict(l=10, r=10, t=50, b=10),
+    )
+    return fig
+
+
+TREND_COLORS = {"Improving": "#2ca02c", "Worsening": "#d62728", "Flat": "#7f7f7f"}
+
+#hoizontal bars, one per state sorted largest to smallest value
+def build_states_chart(view, metric_col, axis_title, suffix):
+    ordered = view.sort_values(metric_col, ascending=False)
+    fig = px.bar(
+        ordered,
+        x=metric_col,
+        y="state_name",
+        orientation="h",
+        color="trend",
+        color_discrete_map=TREND_COLORS,
+        category_orders={
+            "state_name": ordered["state_name"].tolist(),
+            "trend": ["Improving", "Worsening", "Flat"],
+        },
+        hover_data={
+            "region": True,
+            "unemployment_rate": ":.1f",
+            "rate_year_ago": ":.1f",
+            "change_vs_year_ago": ":+.1f",
+            "state_name": False,
+            "trend": False,
+        },
+        labels={
+            "unemployment_rate": "Rate (%)",
+            "rate_year_ago": "Year ago (%)",
+            "change_vs_year_ago": "Change (pts)",
+            "region": "Region",
+        },
+    )
+    fig.update_yaxes(autorange="reversed", title_text="")
+    fig.update_xaxes(title_text=axis_title, ticksuffix=suffix)
+    fig.update_layout(
+        #taller when more states are shown
+        height=max(300, 18*len(ordered)+100),
+        legend_title_text="Vs a year ago",
+        margin=dict(l=10, r=10, t=30, b=10),
     )
     return fig
 
@@ -172,9 +220,63 @@ def page_national():
             mime="text/csv",
         )
 
+def page_states():
+    st.title("State unemployment")
+
+    data = load_state()
+    as_of = data["as_of_date"].max()
+    st.caption(f"What states have the highest unemployment now and who's improving? Latest data: {as_of:%B %Y}. Each state is compared with the same month a year earlier.")
+
+    #controls
+    control_left, control_right = st.columns(2)
+    regions = sorted(data["region"].unique())
+    selected = control_left.multiselect("Regions", regions, default=regions)
+    metric_label = control_right.radio(
+        "Show", ["Unemployment rate", "Change vs a year ago"], horizontal=True
+    )
+    
+    view = data[data["region"].isin(selected)]
+    if view.empty:
+        st.warning("Select at least one region.")
+        return
+
+    #headline numbers for selected regions
+    highest = view.loc[view["unemployment_rate"].idxmax()]
+    lowest = view.loc[view["unemployment_rate"].idxmin()]
+    improving = int((view["trend"] == "Improving").sum())
+    worsening = int((view["trend"] == "Worsening").sum())
+
+    cards = st.columns(3)
+    cards[0].metric(f"Highest: {highest.state_name}", f"{highest.unemployment_rate:.1f}%")
+    cards[1].metric(f"Lowest: {lowest.state_name}", f"{lowest.unemployment_rate:.1f}%")
+    cards[2].metric(
+        "Improving / worsening", f"{improving} / {worsening}",
+        help="Number of states with a lower / higher rate than a year ago.",
+    )
+
+    #chart
+    if metric_label == "Unemployment rate":
+        metric_col, axis_title, suffix = "unemployment_rate", "Unemployment rate", "%"
+    else:
+        metric_col, axis_title, suffix = "change_vs_year_ago", "Change vs a year ago (percentage points)", ""
+    st.plotly_chart(build_states_chart(view, metric_col, axis_title, suffix))
+
+    with st.expander("View and download the data"):
+        st.caption("The rank column compares each state with all 51, regardless of region.")
+        table = view.sort_values("rank_highest_unemployment")
+        st.dataframe(table, hide_index=True)
+        st.download_button(
+            "Download as CSV",
+            view.to_csv(index=False).encode("utf-8"),
+            file_name="state_unemployment.csv",
+            mime="text/csv",
+        )
+
+
 #add navigator for pages
 PAGES = {
     "National": page_national,
+    "States": page_states,
 }
 
 st.sidebar.title("US Economy Dashboard")
