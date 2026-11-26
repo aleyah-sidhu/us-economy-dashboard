@@ -32,7 +32,20 @@ def load_national():
 def load_state():
     return queries.state_latest()
 
+@st.cache_data
+def load_region():
+    return queries.region_trends()
+
 ##Helping functions
+
+#shade recessions that overlap dates being shown on a chart
+def shade_recessions(fig, dates, **vrect_kwargs):
+    for start, end in RECESSIONS:
+        if pd.Timestamp(end) >= dates.min() and pd.Timestamp(start) <= dates.max():
+            fig.add_vrect(
+                x0=start, x1=end, fillcolor="grey", opacity=0.15,
+                line_width=0, **vrect_kwargs,
+            )
 
 #return latest value, its date, and value a year earlier for one column
 def latest_with_year_ago(df, col):
@@ -106,9 +119,7 @@ def build_national_chart(view):
             row=row, col=1
         )
     #shade recessions that overlap in selected range
-    for start, end in RECESSIONS:
-        if pd.Timestamp(end) >= view["obs_date"].min() and pd.Timestamp(start) <= view["obs_date"].max():
-            fig.add_vrect(x0=start, x1=end, fillcolor="grey", opacity=0.15, line_width=0, row="all", col=1)
+    shade_recessions(fig, view["obs_date"], row="all", col=1)
     
     #add a zero line
     fig.add_hline(y=0, line_dash="dot", line_color="grey", row=2, col=1)
@@ -124,7 +135,6 @@ def build_national_chart(view):
 
 
 TREND_COLORS = {"Improving": "#2ca02c", "Worsening": "#d62728", "Flat": "#7f7f7f"}
-
 #hoizontal bars, one per state sorted largest to smallest value
 def build_states_chart(view, metric_col, axis_title, suffix):
     ordered = view.sort_values(metric_col, ascending=False)
@@ -164,7 +174,57 @@ def build_states_chart(view, metric_col, axis_title, suffix):
     )
     return fig
 
-#Set up pages
+REGION_COLORS = {
+    "Midwest": "#1f77b4",
+    "Northeast": "#ff7f0e",
+    "South": "#2ca02c",
+    "West": "#9467bd"
+}
+#build chart for regions: one line per regions showing either avg rate or gap vs national rate
+def build_regions_chart(view, show_gap):
+    metric_col = "gap_vs_national" if show_gap else "avg_unemployment_rate"
+    hover = "%{y:+.1f} pts" if show_gap else "%{y:.1f}%"
+
+    fig = go.Figure()
+    #for each region
+    for region in sorted(view["region"].unique()):
+        region_data = view[view["region"] == region]
+        fig.add_trace(
+            go.Scatter(
+                x=region_data["obs_date"], y=region_data[metric_col], name=region,
+                line=dict(color=REGION_COLORS.get(region, "#333333"), width=2),
+                hovertemplate=hover
+            )
+        )
+
+    if show_gap:
+        #0 line indicating same as national 
+        fig.add_hline(y=0, line_dash="dot", line_color="grey")
+    else:
+        #national rate is same for every region so keep to one row per month
+        national = view.drop_duplicates("obs_date").sort_values("obs_date")
+        fig.add_trace(
+            go.Scatter(
+                x=national["obs_date"], y=national["national_rate"], name="National",
+                line=dict(color="black", width=2, dash="dash"), hovertemplate="%{y:.1f}%",
+            )
+        )
+    shade_recessions(fig, view["obs_date"])
+    fig.update_yaxes(
+        title_text="Percentage points vs national" if show_gap else "Unemployment rate",
+        ticksuffix="" if show_gap else "%",
+    )
+    fig.update_layout(
+        height=520,
+        hovermode="x unified",
+        legend=dict(orientation="h", y=0.15),
+        margin=dict(l=10, r=10, t=30, b=10),
+    )
+    return fig
+
+
+##Set up pages
+
 def page_national():
     st.title("National trends")
     st.caption(
@@ -227,14 +287,17 @@ def page_states():
     as_of = data["as_of_date"].max()
     st.caption(f"What states have the highest unemployment now and who's improving? Latest data: {as_of:%B %Y}. Each state is compared with the same month a year earlier.")
 
-    #controls
+    #controls - interactive components
     control_left, control_right = st.columns(2)
     regions = sorted(data["region"].unique())
+    #ability to select regions you want to see in bar chart
     selected = control_left.multiselect("Regions", regions, default=regions)
+    #ability to select which metric you want to see
     metric_label = control_right.radio(
         "Show", ["Unemployment rate", "Change vs a year ago"], horizontal=True
     )
     
+    #select data within selected region (^^) and warning if empty
     view = data[data["region"].isin(selected)]
     if view.empty:
         st.warning("Select at least one region.")
@@ -272,11 +335,86 @@ def page_states():
             mime="text/csv",
         )
 
+def page_regions():
+    st.title("Regions Over Time vs National Rate")
+
+    st.caption(
+        "Average unemployment rate across the states in each Census region, compared with the national rate. Shaded bands are US recessions (NBER)."
+    )
+
+    data = load_region()
+
+    #controls - interactive components
+    control_left, control_right = st.columns(2)
+    regions = sorted(data["region"].unique())
+    #ability to select regions you want to see in bar chart
+    selected = control_left.multiselect("Regions", regions, default=regions)
+    #ability to select which metric you want to see
+    metric_label = control_right.radio(
+        "Show", ["Average unemployment rate", "Gap vs national rate"], horizontal=True
+    )
+    
+    #slider for date
+    min_date = data["obs_date"].min().to_pydatetime()
+    max_date = data["obs_date"].max().to_pydatetime()
+    start, end = st.slider(
+        "Date range", min_value=min_date, max_value=max_date,
+        value=(min_date, max_date), format="MMM YYYY",
+    )
+
+    #select data within region and date selected, if empty send warning 
+    view = data[
+        data["region"].isin(selected)
+        & (data["obs_date"] >= start)
+        & (data["obs_date"] <= end)
+    ]
+    if view.empty:
+        st.warning("Select at least one region and a date range with data.")
+        return
+
+    #latest value for each selected region using full dataset
+    latest_date = data["obs_date"].max()
+    latest = data[(data["obs_date"] == latest_date) & data["region"].isin(selected)]
+    latest = latest.sort_values("region")
+    cards = st.columns(len(latest)) if len(latest) else []
+    for card, (_, row) in zip(cards, latest.iterrows()):
+        delta = None if pd.isna(row["gap_vs_national"]) else f"{row['gap_vs_national']:+.1f} pts vs national"
+        card.metric(
+            f"{row['region']} ({latest_date:%b %Y})",
+            f"{row['avg_unemployment_rate']:.1f}%",
+            delta,
+            delta_color="off",
+        )
+    peak = view.loc[view["avg_unemployment_rate"].idxmax()]
+    st.markdown(
+        f"**In the selected range, the highest regional average was {peak['avg_unemployment_rate']:.1f}% in the {peak['region']} in {peak['obs_date']:%b %Y}.**"
+    )
+
+    st.plotly_chart(build_regions_chart(view, show_gap=(metric_label == "Gap vs national rate")))
+
+    with st.expander("About this view"):
+        st.markdown(
+            "- **Regional average:** a simple average of the state unemployement rates in each Census region. It is not weighted by population or labor force, so large and small states count equally. \n"
+            "- **National rate:** the official national unemployment rate, which is calculated separately, so a gap of zero doesn't mean a region matches the nation exactly. \n"
+            "- **Gap:** the regional average minus the national rate, in percentage points."
+        )
+
+    with st.expander("View and download the data"):
+        table = view.sort_values(["obs_date", "region"])
+        st.dataframe(table, hide_index=True)
+        st.download_button(
+            "Download as CSV",
+            view.to_csv(index=False).encode("utf-8"),
+            file_name="regional_unemployment.csv",
+            mime="text/csv",
+        )
+
 
 #add navigator for pages
 PAGES = {
     "National": page_national,
     "States": page_states,
+    "Regions": page_regions,
 }
 
 st.sidebar.title("US Economy Dashboard")
