@@ -36,6 +36,10 @@ def load_state():
 def load_region():
     return queries.region_trends()
 
+@st.cache_data
+def load_pandemic():
+    return queries.pandemic_impact()
+
 ##Helping functions
 
 #shade recessions that overlap dates being shown on a chart
@@ -222,6 +226,74 @@ def build_regions_chart(view, show_gap):
     )
     return fig
 
+#build a dumbbell chart where each state has a line from feb 2020 rate to peak
+def build_hardest_hit_chart(view):
+    ordered = view.sort_values("increase", ascending=False)
+    names = ordered["state_name"].tolist()
+
+    #connecting line (one per state) with a gap between states
+    line_x, line_y = [], []
+    for _, row in ordered.iterrows():
+        line_x += [row["baseline_rate"], row["peak_rate"], None]
+        line_y += [row["state_name"], row["state_name"], None]
+    
+    fig = go.Figure()
+    #connecting line
+    fig.add_trace(
+        go.Scatter(x=line_x, y=line_y, mode="lines", line=dict(color="#bbbbbb", width=2), hoverinfo="skip", showlegend=False)
+    )
+    #baseline rate blue dot
+    fig.add_trace(
+        go.Scatter(
+            x=ordered["baseline_rate"], y=names, mode="markers", name="Feb 2020",
+            marker=dict(color="#1f77b4", size=8),
+            hovertemplate="%{y}: %{x:.1f}%<extra>Feb 2020</extra>",
+        )
+    )
+    #peak rate red dot
+    fig.add_trace(
+        go.Scatter(
+            x=ordered["peak_rate"], y=names, mode="markers", name="Peak",
+            marker=dict(color="#d62728", size=8),
+            customdata=ordered["peak_date"].dt.strftime("%b %Y"),
+            hovertemplate="%{y}: %{x:.1f}%<br>Peak month: %{customdata}<extra>Peak</extra>",
+        )
+    )
+    #updated axes
+    fig.update_yaxes(categoryorder="array", categoryarray=names, autorange="reversed", title_text="")
+    fig.update_xaxes(title_text="Unemployment rate", ticksuffix="%")
+    fig.update_layout(
+        height=max(300, 18*len(ordered)+100),
+        legend=dict(orientation="h", y=1.02, yanchor="bottom"),
+        margin=dict(l=10, r=10, t=30, b=10),
+    )
+    return fig
+
+#build scatter plot of the size of increase against months to recover with state labels and region colors
+def build_recovery_chart(view):
+    #get only states that have recovered rates
+    recovered = view.dropna(subset=["months_to_recover"])
+    fig = px.scatter(
+        recovered,
+        x="increase",
+        y="months_to_recover",
+        color="region",
+        color_discrete_map=REGION_COLORS,
+        text="state_code",
+        hover_name="state_name",
+        hover_data={"state_code": False, "increase": ":.1f", "months_to_recover":True},
+        labels={
+            "increase": "Increase (pts)",
+            "months_to_recover": "Months to recover",
+            "region": "Region",
+        },
+    )
+    #update axes 
+    fig.update_traces(textposition="top center", marker=dict(size=10))
+    fig.update_xaxes(title_text="Increase in unemployment rate (percentage points)")
+    fig.update_yaxes(title_text="Months from peak to recovery")
+    fig.update_layout(height=550, legend_title_text="Region", margin=dict(l=10, r=10, t=30, b=10))
+    return fig
 
 ##Set up pages
 
@@ -409,12 +481,100 @@ def page_regions():
             mime="text/csv",
         )
 
+def page_pandemic():
+    st.title("Pandemic Impact")
+    st.caption(
+        "How far each state's unemployment rate rose from February 2020 to its peak (through December 2021), and how long it took to get back within 0.5 percentage points of the February 2020 level."
+    )
+
+    data = load_pandemic()
+
+    #option to select specific region, if no region selected send warning 
+    regions = sorted(data["region"].unique())
+    selected = st.multiselect("Regions", regions, default=regions)
+    view = data[data["region"].isin(selected)]
+    if view.empty:
+        st.warning("Select at least one region.")
+        return
+    
+    #headline numbers for selected region(s)
+    #find row of state with largest increase in rate and all states with record of recovery
+    hardest = view.loc[view["increase"].idxmax()]
+    recovered = view.dropna(subset=["months_to_recover"])
+
+    cards = st.columns(4)
+    cards[0].metric(f"Largest increase: {hardest['state_name']}", f"+{hardest['increase']:.1f} pts")
+    cards[1].metric("Median increase", f"+{view['increase'].median():.1f} pts")
+    if recovered.empty:
+        cards[2].metric("Slowest recover", "n/a")
+        cards[3].metric("Median recovery time", "n/a")
+    else:
+        slowest = recovered.loc[recovered["months_to_recover"].idxmax()]
+        cards[2].metric(
+            f"Slowest recovery: {slowest['state_name']}", f"{int(slowest['months_to_recover'])} months"
+        )
+        cards[3].metric("Median recovery time", f"{recovered['months_to_recover'].median():0f} months")
+
+    #find number of states that didn't recover (if any)
+    not_recovered = len(view) - len(recovered)
+    if not_recovered:
+        st.info(F"{not_recovered} state(s) did not get back within 0.5 points of their February 2020 rate in this data.")
+    
+    #state lookup regardless of region
+    st.subheader("Look up a state")
+    prompt = "Choose a state"
+    choice = st.selectbox("State", [prompt] + sorted(data["state_name"]))
+    #if state is selected, find dara for state and add baseline rate, peak rate (+increase), and recovery date and months (if applicable)
+    if choice != prompt:
+        row = data[data["state_name"] == choice].iloc[0]
+        detail = st.columns(4)
+        detail[0].metric("February 2020", f"{row['baseline_rate']:.1f}%")
+        detail[1].metric(
+            f"Peak ({row['peak_date']:%b %Y})", f"{row['peak_rate']:.1f}%",
+            f"+{row['increase']:.1f} pts", delta_color="inverse",
+        )
+        if pd.isna(row["recovery_date"]):
+            detail[2].metric("Back neat February 2020 rate", "Not yet")
+            detail[3].metric("Months from peak", "n/a")
+        else:
+            detail[2].metric("Back near February 2020 rate", f"{row['recovery_date']:%b %Y}")
+            detail[3].metric("Months from peak", f"{int(row['months_to_recover'])}")
+        st.caption(f"Ranked #{int(row['rank_by_increase'])} of {len(data)} states by size of increase.")
+
+    #separate tabs for separate charts (hardest hit and recovery chart)
+    tab_hit, tab_recovery = st.tabs(["Hardest hit", "Recovery speed"])
+    with tab_hit:
+        st.caption("Each line runs from a state's February 2020 rate (blue) to its peak(red).")
+        st.plotly_chart(build_hardest_hit_chart(view))
+    with tab_recovery:
+        st.caption("States toward the upper right were hit hard and took longer to recover.")
+        st.plotly_chart(build_recovery_chart(view))
+
+    with st.expander("About this view"):
+        st.markdown(
+            "- **Baseline:** the state's unemployment rate in February 2020, just before the shock. \n"
+            "- **Peak:** the highest rate between March 2020 and December 2021. \n"
+            "- **Recovered:** the first month after the peak when the rate was back within 0.5 percentage points of the baseline. The 0.5 is a choice and it can be changed in `sql/pandemic_impact.sql`.\n"
+            "- **Months to recover:** months from the peak month to the recovery month."
+        )    
+
+    with st.expander("View and download the data"):
+        table = view.sort_values("rank_by_increase")
+        st.dataframe(table, hide_index=True)
+        st.download_button(
+            "Download as CSV",
+            view.to_csv(index=False).encode("utf-8"),
+            file_name="pandemic_impact.csv",
+            mime="text/csv",
+        )
+
 
 #add navigator for pages
 PAGES = {
     "National": page_national,
     "States": page_states,
     "Regions": page_regions,
+    "Pandemic": page_pandemic,
 }
 
 st.sidebar.title("US Economy Dashboard")
