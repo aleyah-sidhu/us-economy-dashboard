@@ -2,8 +2,6 @@
 
 An interactive dashboard tracking US unemployment, inflation, and interest rates. Built on a SQL database fed by the Federal Reserve's FRED API.
 
-Live app: [to be filled once live]
-
 ## Question
 
 How have the US labor market, inflation, and interest rates moved together, and how do states compare?
@@ -21,6 +19,26 @@ Source: [FRED](https://fred.stlouisfed.org/)
 ## How it works
 
 FRED API --> extract (raw files) --> load (SQLite) --> SQL queries -> Streamlit dashboard
+
+## Screenshots
+
+![National trends page](docs/national.png)
+*National trends: unemployment, inflation, and interest rates with recessions shaded.*
+
+![State unemployment page](docs/states.png)
+*States: latest unemployment rate by state, colored by change over the past year.*
+
+![Regional comparison page](docs/regions.png)
+*Regions: average unemployment by Census region compared with the national rate.*
+
+![Pandemic impact page](docs/pandemic.png)
+*Pandemic: how far each state's rate rose in 2020 and how long it took to recover.*
+
+## Run the dashboard
+
+1. `python -m src.extract`
+2. `python -m src.load`
+3. `streamlit run app.py`
 
 ## Setup
 
